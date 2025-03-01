@@ -1,167 +1,101 @@
 import streamlit as st
 import pandas as pd
-import duckdb
-import matplotlib.pyplot as plt
 import sqlite3
-from datetime import datetime
+import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
+from io import BytesIO
 
-
-# دیتابیس SQLite
+# Initialize Database
 def init_db():
-    try:
-        conn = sqlite3.connect("saleasy_db.sqlite")
+    with sqlite3.connect("saleasy_db.sqlite") as conn:
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS users 
-                     (username TEXT PRIMARY KEY, password TEXT, 
-                      analysis_type TEXT, report_schedule TEXT)''')
+                     (username TEXT PRIMARY KEY, password TEXT, analysis_type TEXT, report_schedule TEXT)''')
         c.execute('''CREATE TABLE IF NOT EXISTS reports 
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, 
-                      report_time TEXT, report_file TEXT,
-                      FOREIGN KEY (username) REFERENCES users(username))''')
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, report_time TEXT, report_file TEXT)''')
         conn.commit()
-        conn.close()
-        st.write("دیتابیس با موفقیت راه‌اندازی شد!")
-    except Exception as e:
-        st.error(f"خطا توی راه‌اندازی دیتابیس: {str(e)}")
 
+# Generate Excel Report
+def generate_excel(df, top_product):
+    output = BytesIO()
+    writer = pd.ExcelWriter(output, engine='xlsxwriter')
+    df.to_excel(writer, sheet_name='Sales Report', index=False)
+    workbook = writer.book
+    worksheet = writer.sheets['Sales Report']
+    worksheet.write(len(df) + 2, 0, f"Top Selling Product: {top_product['product']} (Sales: {top_product['price']})")
+    writer.close()
+    return output.getvalue()
 
-def save_user_choice(username, analysis_type, report_schedule=None):
-    try:
-        conn = sqlite3.connect("saleasy_db.sqlite")
-        c = conn.cursor()
-        c.execute(
-            "INSERT OR REPLACE INTO users (username, password, analysis_type, report_schedule) VALUES (?, ?, ?, ?)",
-            (username, st.session_state.get("password", ""), analysis_type, report_schedule))
-        conn.commit()
-        conn.close()
-        st.write(f"کاربر {username} با موفقیت توی دیتابیس ذخیره شد!")
-    except Exception as e:
-        st.error(f"خطا توی ذخیره انتخاب: {str(e)}")
+# App UI
+st.set_page_config(page_title="Saleasy - Sales Dashboard", layout="wide")
+st.markdown("<h1 style='text-align: center; color: blue;'>Saleasy - داشبورد فروش</h1>", unsafe_allow_html=True)
 
-
-def get_user_choice(username):
-    try:
-        conn = sqlite3.connect("saleasy_db.sqlite")
-        c = conn.cursor()
-        c.execute("SELECT analysis_type, report_schedule FROM users WHERE username = ?", (username,))
-        result = c.fetchone()
-        conn.close()
-        return (result[0] if result else "جمع فروش هر محصول", result[1] if result else "هفتگی")
-    except Exception as e:
-        st.error(f"خطا توی گرفتن انتخاب: {str(e)}")
-        return ("جمع فروش هر محصول", "هفتگی")
-
-
-def save_report(username, report_file):
-    try:
-        conn = sqlite3.connect("saleasy_db.sqlite")
-        c = conn.cursor()
-        report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        c.execute("INSERT INTO reports (username, report_time, report_file) VALUES (?, ?, ?)",
-                  (username, report_time, report_file))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        st.error(f"خطا توی ذخیره گزارش: {str(e)}")
-
-
-# شروع دیتابیس
-init_db()
-
-# عنوان
-st.markdown("<h1 style='text-align: center; color: blue;'>Saleasy - تحلیل‌گر فروش ساده</h1>", unsafe_allow_html=True)
-
-# ورود
-if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
-    st.subheader("ورود به سیستم")
+# Login System
+if "logged_in" not in st.session_state:
     username = st.text_input("نام کاربری")
     password = st.text_input("رمز عبور", type="password")
     if st.button("ورود"):
-        try:
-            conn = sqlite3.connect("saleasy_db.sqlite")
-            c = conn.cursor()
-            c.execute("SELECT password FROM users WHERE username = ?", (username,))
-            result = c.fetchone()
-
-            if result and result[0] == password:  # کاربر قدیمی
-                st.session_state["logged_in"] = True
-                st.session_state["username"] = username
-                st.success(f"خوش آمدی، {username}!")
-            elif not result:  # کاربر جدید
-                st.session_state["logged_in"] = True
-                st.session_state["username"] = username
-                st.session_state["password"] = password
-                save_user_choice(username, "جمع فروش هر محصول", "هفتگی")
-                st.success(f"خوش آمدی، {username}! حسابت ساخته شد.")
-            else:
-                st.error("رمز اشتباهه!")
-            conn.close()
-        except Exception as e:
-            st.error(f"خطا توی ورود: {str(e)}")
-else:
-    # صفحه اصلی
-    username = st.session_state["username"]
-    st.write(f"سلام، {username}! داده‌های فروش رو وارد کن و تحلیل ببین!")
-
-    file = st.file_uploader("انتخاب فایل CSV", type="csv")
-
-    if file:
-        try:
-            df = pd.read_csv(file)
-
-            st.subheader("تحلیل‌ها رو انتخاب کن:")
-            show_total = st.checkbox("جمع فروش هر محصول", value=True)
-            show_top = st.checkbox("محصول پرطرفدار")
-            show_trend = st.checkbox("روند فروش روزانه")
-
-            default_analysis, default_schedule = get_user_choice(username)
-            analysis_type = st.selectbox("تحلیل پیش‌فرض", [
-                "جمع فروش هر محصول", "محصول پرطرفدار", "روند فروش روزانه"
-            ], index=["جمع فروش هر محصول", "محصول پرطرفدار", "روند فروش روزانه"].index(default_analysis))
-
-            report_schedule = st.selectbox("گزارش خودکار کی بفرستیم؟", ["هفتگی", "روزانه", "ماهانه"],
-                                           index=["هفتگی", "روزانه", "ماهانه"].index(default_schedule))
-
-            if st.button("ذخیره انتخاب‌ها"):
-                save_user_choice(username, analysis_type, report_schedule)
-                st.success("انتخاب‌ها ذخیره شد!")
-
-            if show_total:
-                result = duckdb.query("SELECT product, SUM(price) as total FROM df GROUP BY product").df()
-                st.write("جمع فروش:")
-                st.bar_chart(result.set_index("product"))
-                st.dataframe(result)
-
-            if show_top:
-                result = duckdb.query(
-                    "SELECT product, SUM(price) as total FROM df GROUP BY product ORDER BY total DESC LIMIT 1").df()
-                st.write(f"محصول پرطرفدار: {result['product'][0]} با فروش {result['total'][0]}")
-
-            if show_trend:
-                result = duckdb.query("SELECT date, SUM(price) as daily_total FROM df GROUP BY date").df()
-                st.write("روند روزانه:")
-                st.line_chart(result.set_index("date"))
-
-            if st.button("ذخیره گزارش برای ارسال خودکار"):
-                plt.figure(figsize=(10, 6))
-                if show_trend:
-                    result.plot(kind="line", x="date", y="daily_total")
-                else:
-                    result.plot(kind="bar", x="product", y="total")
-                plt.savefig(f"report_{username}.png")
-                save_report(username, f"report_{username}.png")
-                st.success(f"گزارش ذخیره شد و طبق زمان‌بندی {report_schedule} در دسترسه!")
-
-            if st.button("دانلود جدول به CSV"):
-                result.to_csv(f"sales_export_{username}.csv", index=False)
-                with open(f"sales_export_{username}.csv", "rb") as f:
-                    st.download_button("دانلود CSV", f, file_name=f"sales_export_{username}.csv")
-
-            st.success("تحلیل با موفقیت انجام شد!")
-        except Exception as e:
-            st.error(f"یه مشکلی پیش اومد: {str(e)}—لطفاً داده‌ها رو چک کن!")
-
-    if st.button("خروج"):
-        del st.session_state["logged_in"]
-        del st.session_state["username"]
+        st.session_state["logged_in"] = True
+        st.session_state["username"] = username
+        st.success(f"خوش آمدید {username}!")
         st.rerun()
+else:
+    st.sidebar.write(f"👤 {st.session_state['username']}")
+    st.sidebar.button("خروج", on_click=lambda: st.session_state.clear())
+
+    file = st.file_uploader("فایل CSV خود را آپلود کنید", type=["csv"])
+    if file:
+        df = pd.read_csv(file)
+        selected_columns = st.multiselect("انتخاب ستون‌های مورد نظر", df.columns, default=df.columns[:3])
+        if selected_columns:
+            df_clean = df[selected_columns].copy()
+            st.write("داده‌های انتخاب‌شده:")
+            st.dataframe(df_clean)
+
+            product_col = st.selectbox("ستون محصول", selected_columns)
+            price_col = st.selectbox("ستون قیمت", selected_columns)
+            date_col = st.selectbox("ستون تاریخ", selected_columns)
+
+            df_clean = df[[product_col, price_col, date_col]].copy()
+            df_clean.columns = ["product", "price", "date"]
+            df_clean["price"] = pd.to_numeric(df_clean["price"], errors="coerce")
+            df_clean["date"] = pd.to_datetime(df_clean["date"], errors="coerce")
+            df_clean = df_clean.dropna()
+
+            # Compute sales summary
+            sales_summary = df_clean.groupby("product")["price"].sum().reset_index()
+
+            if not sales_summary.empty:
+                top_product = sales_summary.sort_values(by="price", ascending=False).iloc[0]
+                st.markdown(f"### 🏆 پرفروش‌ترین محصول: {top_product['product']} (فروش: {top_product['price']:,.0f} تومان)")
+            else:
+                top_product = {"product": "N/A", "price": 0}
+                st.warning("⚠️ داده‌ای برای تحلیل وجود ندارد!")
+
+            # Display Metrics
+            col1, col2, col3 = st.columns(3)
+            col1.metric("💰 مجموع فروش", f"{df_clean['price'].sum():,.0f} تومان")
+            col2.metric("📦 تعداد محصولات", f"{df_clean['product'].nunique()}")
+            col3.metric("📅 اولین تاریخ", f"{df_clean['date'].min()}")
+
+            # Additional Charts
+            fig_pie = px.pie(sales_summary, names="product", values="price", title="🔹 سهم فروش هر محصول")
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+            sales_trend = df_clean.groupby("date")["price"].sum().reset_index()
+            fig_line = px.line(sales_trend, x="date", y="price", title="📈 روند فروش در طول زمان")
+            st.plotly_chart(fig_line, use_container_width=True)
+
+            df_clean["day"] = df_clean["date"].dt.day_name()
+            sales_heatmap = df_clean.pivot_table(index="day", columns=df_clean["date"].dt.month, values="price", aggfunc="sum")
+            plt.figure(figsize=(10, 6))
+            sns.heatmap(sales_heatmap, cmap="Blues", annot=True, fmt=".0f")
+            st.pyplot(plt)
+
+            # Download Reports
+            if st.button("📥 دانلود Excel"):
+                excel_data = generate_excel(df_clean, top_product)
+                st.download_button("دانلود", excel_data, "sales_report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+            st.success("✅ تحلیل انجام شد!")
